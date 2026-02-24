@@ -4,8 +4,9 @@ import { createHash } from "crypto";
 
 const TOKEN_URL = "https://mobil.itmc.tu-dortmund.de/oauth2/v2/access_token";
 const RESULTS_URL = "https://mobil.itmc.tu-dortmund.de/lsf/v3/courses";
-const NTFY_BASE_URL = "https://ntfy.sh";
+const NTFY_BASE_URL = process.env.NTFY_BASE_URL ?? "https://ntfy.sh";
 const STATE_FILE = fileURLToPath(new URL("./state.json", import.meta.url));
+const USER_AGENT = process.env.USER_AGENT ?? "tu-ntfy/1.0 (https://github.com/phibr0/tu-ntfy)";
 
 type State = Record<string, string>;
 
@@ -32,30 +33,10 @@ const writeState = (state: State) => {
   fs.writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 };
 
-const fmtGrade = (pnote: string): string => {
-  if (pnote === "000" || pnote.trim() === "") return pnote;
-  if (/^\d{3}$/.test(pnote)) return `${pnote[0]}.${pnote.slice(1)}`;
-  return pnote;
-};
-
-const signature = (e: CourseResult): string => {
-  return hash([e.labID, e.aenddat, e.pstatusKurz, e.pstatus, e.pnote, e.pdatum].join("#"));
-};
-
-const formatLine = (e: CourseResult): string => {
-  const leistung = e.leistung || "(ohne Titel)";
-  const status = e.pstatus || e.pstatusKurz || "";
-  const note = fmtGrade(e.pnote);
-  const date = e.aenddat ? ` (Änderung: ${e.aenddat})` : "";
-  const notePart = note ? `, Note: ${note}` : "";
-  const statusPart = status ? `, Status: ${status}` : "";
-  return `- ${leistung}${notePart}${statusPart}${date}`;
-};
-
 const fetchAccessToken = async (username: string, password: string): Promise<string> => {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
     body: JSON.stringify({ username, password, grant_type: "password" }),
   });
   if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
@@ -65,7 +46,7 @@ const fetchAccessToken = async (username: string, password: string): Promise<str
 
 const fetchResults = async (accessToken: string): Promise<CourseResult[]> => {
   const res = await fetch(RESULTS_URL, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": USER_AGENT },
   });
   if (!res.ok) throw new Error(`Results request failed: ${res.status}`);
   return (await res.json()) as CourseResult[];
@@ -90,26 +71,27 @@ const state = readState();
 const accessToken = await fetchAccessToken(username, password);
 const results = await fetchResults(accessToken);
 
-const changed: CourseResult[] = [];
-const nextState: State = { ...state };
+const nextState = structuredClone(state);
+let updated = false;
 
 for (const e of results) {
   const labID = hash(e.labID);
-  if (labID.length === 0) continue;
 
-  const sig = signature(e);
-  if (nextState[labID] !== sig) {
-    changed.push(e);
-    nextState[labID] = sig;
-  }
+  const sig = hash([e.labID, e.aenddat, e.pstatusKurz, e.pstatus, e.pnote, e.pdatum].join("#"));
+  if (nextState[labID] === sig) continue;
+
+  const leistung = e.leistung || "(untitled)";
+  const status = e.pstatus || e.pstatusKurz || "";
+  const note = e.pnote === "000" ? null : `${e.pnote[0]}.${e.pnote.slice(1)}`;
+
+  const parts = [`Course: ${leistung}`];
+  if (note) parts.push(`Grade: ${note}`);
+  if (status) parts.push(`Status: ${status}`);
+  if (e.aenddat) parts.push(`Updated: ${e.aenddat}`);
+
+  await notify(ntfyTopic, "Exam Result", parts.join(" | "));
+  nextState[labID] = sig;
+  updated = true;
 }
 
-if (changed.length === 0) {
-  if (!fs.existsSync(STATE_FILE)) writeState(nextState);
-} else {
-  const body =
-    `Neue/aktualisierte Einträge: ${changed.length}\n\n` + changed.map(formatLine).join("\n");
-
-  await notify(ntfyTopic, "TU Dortmund: neue Prüfungsergebnisse", body);
-  writeState(nextState);
-}
+if (updated || !fs.existsSync(STATE_FILE)) writeState(nextState);
