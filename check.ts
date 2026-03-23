@@ -4,6 +4,8 @@ import { createHash } from "crypto";
 
 const TOKEN_URL = "https://mobil.itmc.tu-dortmund.de/oauth2/v2/access_token";
 const RESULTS_URL = "https://mobil.itmc.tu-dortmund.de/lsf/v3/courses";
+const CERTIFICATE_URL =
+  "https://irb.cs.tu-dortmund.de/cont/de/service/stud/zeugnisinfo/zeugnisinfo.sh";
 const NTFY_BASE_URL = process.env.NTFY_BASE_URL ?? "https://ntfy.sh";
 const STATE_FILE = fileURLToPath(new URL("./state.json", import.meta.url));
 const USER_AGENT = process.env.USER_AGENT ?? "tu-ntfy/1.0 (https://github.com/phibr0/tu-ntfy)";
@@ -52,6 +54,32 @@ const fetchResults = async (accessToken: string): Promise<CourseResult[]> => {
   return (await res.json()) as CourseResult[];
 };
 
+const fetchCertificateStatus = async (matrikelnummer: string): Promise<string> => {
+  const formData = new URLSearchParams();
+  formData.append("matrikelnummer", matrikelnummer);
+
+  const res = await fetch(CERTIFICATE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT },
+    body: formData.toString(),
+  });
+  if (!res.ok) throw new Error(`Certificate request failed: ${res.status}`);
+
+  const html = await res.text();
+  const h2Match = html.match(/<h2[^>]*>(.*?)<\/h2>/gi);
+  if (!h2Match || h2Match.length < 2) {
+    return "Unable to parse certificate status";
+  }
+
+  const secondH2 = h2Match[1];
+  const textMatch = secondH2.match(/<h2[^>]*>(.*?)<\/h2>/i);
+  const text = textMatch
+    ? textMatch[1].replace(/\s+/g, " ").trim()
+    : "Unable to parse certificate status";
+
+  return text;
+};
+
 const notify = async (topic: string, title: string, message: string): Promise<void> => {
   const url = `${NTFY_BASE_URL}/${encodeURIComponent(topic)}`;
   const res = await fetch(url, {
@@ -65,6 +93,7 @@ const notify = async (topic: string, title: string, message: string): Promise<vo
 const username = process.env.UNI_USERNAME!;
 const password = process.env.UNI_PASSWORD!;
 const ntfyTopic = process.env.NTFY_TOPIC!;
+const matrikelnummer = process.env.MATRIKELNUMMER!;
 
 const state = readState();
 
@@ -92,6 +121,25 @@ for (const e of results) {
   await notify(ntfyTopic, "Exam Result", parts.join(" | "));
   nextState[labID] = sig;
   updated = true;
+}
+
+if (matrikelnummer) {
+  try {
+    const status = await fetchCertificateStatus(matrikelnummer);
+    const certificateHash = hash(`${matrikelnummer}-${status}`);
+    const key = hash(`certificate-status-${matrikelnummer}`);
+    const storedHash = state[key];
+
+    if (certificateHash !== storedHash) {
+      if (!status.includes("Zeugnis ist nicht abholbereit")) {
+        await notify(ntfyTopic, "Certificate Available", status);
+      }
+      nextState[key] = certificateHash;
+      updated = true;
+    }
+  } catch (error) {
+    console.error("Failed to check certificate status:", error);
+  }
 }
 
 if (updated || !fs.existsSync(STATE_FILE)) writeState(nextState);

@@ -9,9 +9,10 @@
 
 1. Fork this repository.
 2. In your fork, add GitHub Actions secrets:
-   - `UNI_USERNAME`: your TU Dortmund username
-   - `UNI_PASSWORD`: your TU Dortmund password
+   - `UNI_USERNAME`: your TU Dortmund SSO username
+   - `UNI_PASSWORD`: your TU Dortmund SSO password
    - `NTFY_TOPIC`: the ntfy topic name to publish to
+   - (optional) `MATRIKELNUMMER`: your TU Dortmund student ID (matrikelnummer)
    - (optional) `NTFY_BASE_URL`: custom ntfy server URL (default: `https://ntfy.sh`)
    - (optional) `USER_AGENT`: override the default user agent string
 3. Enable GitHub Actions in your fork.

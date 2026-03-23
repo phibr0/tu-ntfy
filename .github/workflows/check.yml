@@ -27,6 +27,7 @@ jobs:
           UNI_USERNAME: ${{ secrets.UNI_USERNAME }}
           UNI_PASSWORD: ${{ secrets.UNI_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          MATRIKELNUMMER: ${{ secrets.MATRIKELNUMMER }}
         run: bun run check
 
       - name: Commit updated state (if changed)
