@@ -35,59 +35,81 @@ const writeState = (state: State) => {
   fs.writeFileSync(STATE_FILE, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 };
 
+const withRetry = async <T>(fn: () => Promise<T>, retries = 3, baseDelay = 1000): Promise<T> => {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt === retries) throw error;
+      const delay = baseDelay * 2 ** attempt;
+      console.warn(`Attempt ${attempt + 1} failed, retrying in ${delay}ms...`, error);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error("Unreachable");
+};
+
 const fetchAccessToken = async (username: string, password: string): Promise<string> => {
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
-    body: JSON.stringify({ username, password, grant_type: "password" }),
+  return withRetry(async () => {
+    const res = await fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+      body: JSON.stringify({ username, password, grant_type: "password" }),
+    });
+    if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
+    const data = (await res.json()) as { access_token: string };
+    return data.access_token;
   });
-  if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
-  const data = (await res.json()) as { access_token: string };
-  return data.access_token;
 };
 
 const fetchResults = async (accessToken: string): Promise<CourseResult[]> => {
-  const res = await fetch(RESULTS_URL, {
-    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": USER_AGENT },
+  return withRetry(async () => {
+    const res = await fetch(RESULTS_URL, {
+      headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": USER_AGENT },
+    });
+    if (!res.ok) throw new Error(`Results request failed: ${res.status}`);
+    return (await res.json()) as CourseResult[];
   });
-  if (!res.ok) throw new Error(`Results request failed: ${res.status}`);
-  return (await res.json()) as CourseResult[];
 };
 
 const fetchCertificateStatus = async (matrikelnummer: string): Promise<string> => {
-  const formData = new URLSearchParams();
-  formData.append("matrikelnummer", matrikelnummer);
+  return withRetry(async () => {
+    const formData = new URLSearchParams();
+    formData.append("matrikelnummer", matrikelnummer);
 
-  const res = await fetch(CERTIFICATE_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT },
-    body: formData.toString(),
+    const res = await fetch(CERTIFICATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT },
+      body: formData.toString(),
+    });
+    if (!res.ok) throw new Error(`Certificate request failed: ${res.status}`);
+
+    const html = await res.text();
+    const h2Match = html.match(/<h2[^>]*>(.*?)<\/h2>/gi);
+    if (!h2Match || h2Match.length < 2) {
+      return "Unable to parse certificate status";
+    }
+
+    const secondH2 = h2Match[1];
+    const textMatch = secondH2.match(/<h2[^>]*>(.*?)<\/h2>/i);
+    const text = textMatch
+      ? textMatch[1].replace(/\s+/g, " ").trim()
+      : "Unable to parse certificate status";
+
+    return text;
   });
-  if (!res.ok) throw new Error(`Certificate request failed: ${res.status}`);
-
-  const html = await res.text();
-  const h2Match = html.match(/<h2[^>]*>(.*?)<\/h2>/gi);
-  if (!h2Match || h2Match.length < 2) {
-    return "Unable to parse certificate status";
-  }
-
-  const secondH2 = h2Match[1];
-  const textMatch = secondH2.match(/<h2[^>]*>(.*?)<\/h2>/i);
-  const text = textMatch
-    ? textMatch[1].replace(/\s+/g, " ").trim()
-    : "Unable to parse certificate status";
-
-  return text;
 };
 
 const notify = async (topic: string, title: string, message: string): Promise<void> => {
-  const url = `${NTFY_BASE_URL}/${encodeURIComponent(topic)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { Title: title, Priority: "4" },
-    body: message,
+  return withRetry(async () => {
+    const url = `${NTFY_BASE_URL}/${encodeURIComponent(topic)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Title: title, Priority: "4" },
+      body: message,
+    });
+    if (!res.ok) throw new Error(`Ntfy request failed: ${res.status}`);
   });
-  if (!res.ok) throw new Error(`Ntfy request failed: ${res.status}`);
 };
 
 const username = process.env.UNI_USERNAME!;
